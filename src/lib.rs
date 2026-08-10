@@ -740,6 +740,7 @@ impl Roku {
                             } else {
                                 format!("answered ECP, power {power}")
                             },
+                                                    ..Default::default()
                         }],
                         multiple: false,
                     },
@@ -752,7 +753,7 @@ impl Roku {
                     .get("chosen")
                     .and_then(|c| driver_sdk::serde_json::from_value(c.clone()).ok())
                     .unwrap_or_default();
-                (SetupStep::Done { devices }, Value::Null)
+                (SetupStep::done(devices), Value::Null)
             }
 
             other => (
