@@ -12,7 +12,7 @@ id = 1
 type = "media_player"
 primary = true
 name = "Roku"
-capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_search = true, is_video_source = true, is_audio_source = true }
+capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
 
 [[connection]]
 id = 1

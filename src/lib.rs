@@ -198,7 +198,19 @@ impl DriverModule for Roku {
 
             let mut url = format!("{base}/launch/{id}");
             if let Some(content) = args.get("content_id").and_then(Value::as_str) {
-                url.push_str(&format!("?contentId={content}&mediaType=movie"));
+                // ECP wants to be told what the id refers to, and gets it wrong when it is not.
+                // This was hardcoded to `movie`, so every series deep link asked Roku to open a
+                // film with a series id — which opens nothing and reports nothing. `season` and
+                // `short` have no ECP spelling; `series` is the closest thing ECP has to either.
+                let kind = match args.get("content_kind").and_then(Value::as_str) {
+                    Some("series") | Some("season") => "series",
+                    Some("episode") => "episode",
+                    Some("live") => "live",
+                    // Absent means the caller did not know, and `movie` is what Roku itself
+                    // assumes for a bare content id.
+                    _ => "movie",
+                };
+                url.push_str(&format!("?contentId={content}&mediaType={kind}"));
             }
 
             let name = inst
