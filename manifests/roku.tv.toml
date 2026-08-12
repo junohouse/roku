@@ -3,7 +3,7 @@ id = "roku.tv"
 name = "Roku TV"
 manufacturer = "Roku"
 version = "1.0.0"
-runtime = "native"
+runtime = "wasm"
 primary = true
 
 # Two proxies, because a Roku TV genuinely is two things: a streamer and a display. A room's
