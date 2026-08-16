@@ -54,6 +54,46 @@ const LIMITED_MODE: &str =
 const MEDIA: LocalId = 1;
 const TV: LocalId = 2;
 
+/// A connection id for one of a Roku TV's physical inputs, from the channel id it lists it
+/// under — `tvinput.hdmi2` is 1002, matching the manifest's own numbering.
+///
+/// From the name rather than from list order, because a project remembers what an installer
+/// wired by this number and the channel list is not ordered by anything stable. `None` for
+/// every ordinary channel: Netflix is not a jack.
+fn connection_id(app_id: &str) -> Option<LocalId> {
+    let input = app_id.strip_prefix("tvinput.")?;
+    if let Some(n) = input.strip_prefix("hdmi") {
+        return n.parse::<LocalId>().ok().filter(|n| (1..=99).contains(n)).map(|n| 1000 + n);
+    }
+    match input {
+        "cvbs" | "av" => Some(1101),
+        "component" => Some(1102),
+        "tuner" | "dtv" => Some(1201),
+        _ => None,
+    }
+}
+
+/// What kind of cable an input takes, for the pathfinder's own vocabulary.
+fn signal_class(app_id: &str) -> &'static str {
+    match connection_id(app_id) {
+        Some(1101) => "COMPOSITE",
+        Some(1102) => "COMPONENT",
+        Some(1201) => "RF_UHF_VHF",
+        _ => "HDMI",
+    }
+}
+
+/// The channel id a connection is switched to — the inverse of [`connection_id`].
+fn tvinput_for(connection: u64) -> Option<String> {
+    match connection {
+        1001..=1099 => Some(format!("tvinput.hdmi{}", connection - 1000)),
+        1101 => Some("tvinput.cvbs".into()),
+        1102 => Some("tvinput.component".into()),
+        1201 => Some("tvinput.tuner".into()),
+        _ => None,
+    }
+}
+
 impl Roku {
     fn base(inst: &Instance) -> Option<String> {
         let addr = inst.property("Address").as_str()?.trim().to_string();
@@ -277,12 +317,24 @@ impl DriverModule for Roku {
             }
 
             (TV, "set_input") => {
-                // Roku TV models inputs as launchable "channels" too.
-                let n = args.get("connection").and_then(Value::as_u64).unwrap_or(1);
-                return vec![HostCall::Http(HttpRequest::new(
-                    "POST",
-                    format!("{base}/launch/tvinput.hdmi{n}"),
-                ))];
+                // Roku TV models inputs as launchable "channels" too. The connection id is not
+                // the HDMI number: 1001 is HDMI 1, and interpolating it straight into the
+                // channel id asked for `tvinput.hdmi1001`, which no set has — so switching
+                // inputs never worked and said nothing about it.
+                let Some(connection) = args.get("connection").and_then(Value::as_u64) else {
+                    return vec![HostCall::warn("roku: set_input needs a connection")];
+                };
+                let Some(input) = tvinput_for(connection) else {
+                    return vec![HostCall::warn(format!(
+                        "roku: no such connection {connection}"
+                    ))];
+                };
+                let mut a = Args::new();
+                a.insert("connection".into(), json!(connection));
+                return vec![
+                    HostCall::Http(HttpRequest::new("POST", format!("{base}/launch/{input}"))),
+                    HostCall::notify(TV, "input_changed", a),
+                ];
             }
 
             (_, other) => return vec![HostCall::warn(format!("roku: unhandled `{other}`"))],
@@ -397,11 +449,33 @@ impl DriverModule for Roku {
                 })
                 .collect();
 
+            // A Roku TV lists its physical inputs in the same breath as its channels, so the
+            // set says how many HDMI ports it has and the manifest's guess of two can go.
+            let connections: Vec<ConnectionDecl> = apps
+                .iter()
+                .filter_map(|(id, name)| {
+                    Some(ConnectionDecl {
+                        id: connection_id(id)?,
+                        proxy: TV,
+                        dir: Direction::Consumer,
+                        class: signal_class(id).into(),
+                        name: name.clone(),
+                    })
+                })
+                .collect();
+
             let names: Vec<String> = apps.into_iter().map(|(_, n)| n).collect();
             let mut a = Args::new();
             a.insert("apps".into(), json!(names));
             a.insert("app_icons".into(), json!(icons));
-            return vec![HostCall::notify(MEDIA, "apps_changed", a)];
+            let mut out = vec![HostCall::notify(MEDIA, "apps_changed", a)];
+            // A Roku player has no inputs and lists none, and an empty list from one would
+            // claim it has none rather than that it never said — so only a set that reported
+            // some replaces the manifest's.
+            if !connections.is_empty() {
+                out.push(HostCall::Connections { connections });
+            }
+            return out;
         }
 
         Vec::new()
@@ -775,6 +849,98 @@ impl Roku {
                 Value::Null,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tv() -> Instance {
+        let mut inst = Instance::default();
+        inst.properties.insert("Address".into(), json!("10.0.0.5"));
+        inst
+    }
+
+    /// The connection id is not the HDMI number. Interpolating it straight into the channel id
+    /// asked a real set for `tvinput.hdmi1001`, which it does not have — so switching inputs
+    /// did nothing, and said nothing, for as long as this driver has shipped.
+    #[test]
+    fn set_input_maps_the_connection_id_to_the_channel_id() {
+        let driver = Roku;
+        let mut inst = tv();
+        let mut a = Args::new();
+        a.insert("connection".into(), json!(1002u64));
+        let calls = driver.on_command(&mut inst, TV, "set_input", &a);
+        let [HostCall::Http(req), HostCall::Notify { .. }] = calls.as_slice() else {
+            panic!("expected a launch and a notify, got {calls:?}");
+        };
+        assert!(req.url.ends_with("/launch/tvinput.hdmi2"), "{}", req.url);
+    }
+
+    #[test]
+    fn set_input_refuses_a_connection_no_roku_has() {
+        let driver = Roku;
+        let mut inst = tv();
+        let mut a = Args::new();
+        a.insert("connection".into(), json!(7u64));
+        let calls = driver.on_command(&mut inst, TV, "set_input", &a);
+        assert!(matches!(calls.as_slice(), [HostCall::Log { level, .. }] if level == "warn"));
+    }
+
+    /// A Roku TV lists its inputs among its channels, so the set says how many HDMI ports it
+    /// has and the manifest's guess of two stops being the answer.
+    #[test]
+    fn the_channel_list_reports_the_sets_real_inputs() {
+        let driver = Roku;
+        let mut inst = tv();
+        let xml = r#"<apps>
+            <app id="12">Netflix</app>
+            <app id="tvinput.hdmi1">HDMI 1</app>
+            <app id="tvinput.hdmi2">HDMI 2</app>
+            <app id="tvinput.hdmi3">HDMI 3</app>
+            <app id="tvinput.tuner">Antenna TV</app>
+            <app id="837">YouTube</app>
+        </apps>"#;
+        let mut a = Args::new();
+        a.insert("body".into(), json!(xml));
+        let calls = driver.on_event(&mut inst, 0, "http_response", &a);
+        let Some(HostCall::Connections { connections }) = calls.iter().find_map(|c| match c {
+            HostCall::Connections { .. } => Some(c.clone()),
+            _ => None,
+        }) else {
+            panic!("expected a Connections call, got {calls:?}");
+        };
+
+        let ids: Vec<LocalId> = connections.iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![1001, 1002, 1003, 1201]);
+        assert!(!ids.contains(&1004), "this set has three HDMI ports");
+        assert!(connections.iter().all(|c| c.dir == Direction::Consumer && c.proxy == TV));
+        assert_eq!(connections.iter().find(|c| c.id == 1201).unwrap().class, "RF_UHF_VHF");
+        // Channels are not jacks.
+        assert_eq!(connections.len(), 4);
+    }
+
+    /// A player has no inputs and lists none. An empty list would claim it has none rather
+    /// than that it never said, and that is a different statement — see `HostCall::Connections`.
+    #[test]
+    fn a_player_reports_no_connections_at_all() {
+        let driver = Roku;
+        let mut inst = tv();
+        let mut a = Args::new();
+        a.insert("body".into(), json!(r#"<apps><app id="12">Netflix</app></apps>"#));
+        let calls = driver.on_event(&mut inst, 0, "http_response", &a);
+        assert!(
+            !calls.iter().any(|c| matches!(c, HostCall::Connections { .. })),
+            "got {calls:?}"
+        );
+    }
+
+    #[test]
+    fn ids_round_trip_between_the_channel_id_and_the_connection() {
+        assert_eq!(connection_id("tvinput.hdmi3"), Some(1003));
+        assert_eq!(tvinput_for(1003).as_deref(), Some("tvinput.hdmi3"));
+        assert_eq!(connection_id("12"), None, "Netflix is not a jack");
     }
 }
 
