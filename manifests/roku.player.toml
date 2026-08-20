@@ -1,5 +1,9 @@
 [driver]
-id = "roku"
+# `roku.player` rather than a bare `roku`: an id namespaces a product under its vendor, and
+# a bare one would take the whole `roku` namespace for a single driver. Every unit this
+# drives *is* a streaming player — that is the `media_player` proxy below — and some of them
+# have a screen bolted on, which arrives as a child. What anybody sees is `name`.
+id = "roku.player"
 name = "Roku"
 manufacturer = "Roku"
 version = "1.0.0"

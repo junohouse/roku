@@ -898,7 +898,7 @@ impl Roku {
                             kind: model,
                             // One driver either way. Whether there is a screen is settled
                             // after adoption, by the box itself — see `SCREEN`.
-                            driver_id: "roku".into(),
+                            driver_id: "roku.player".into(),
                             properties: [
                                 ("Address".to_string(), json!(address)),
                                 ("Port".to_string(), json!(8060)),
