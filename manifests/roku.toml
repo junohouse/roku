@@ -1,0 +1,50 @@
+[driver]
+id = "roku"
+name = "Roku"
+manufacturer = "Roku"
+version = "1.0.0"
+runtime = "wasm"
+primary = true
+
+# One driver for both, because a Roku Express and a Roku TV are the same streamer — the same
+# ECP on the same port, the same channels, the same keys. The difference is that one of them
+# has a screen bolted to it, and which one you have is not knowable until the box is asked.
+#
+# It used to be two drivers, `roku.tv` and `roku.player`, identical but for a second proxy.
+# That put the question to whoever was adding it: the configurator offered both for the same
+# television, because both claim `roku:ecp` and nothing at that point had asked the device
+# anything.
+[[proxy]]
+id = 1
+type = "media_player"
+primary = true
+name = "Roku"
+capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
+
+# The screen, when there is one. Presented at runtime from `is-tv` in `/query/device-info`,
+# with the set's real inputs rather than a manifest's guess of two HDMI ports — see
+# `HostCall::Present` and `ForNode`.
+[children]
+proxies = ["tv"]
+
+[[transport]]
+kind = "network"
+port = 8060
+discovery = "ssdp"
+
+[[property]]
+name = "Address"
+type = "string"
+tooltip = "IP address of the Roku"
+
+[[property]]
+name = "Port"
+type = "ranged_int"
+min = 1
+max = 65535
+default = 8060
+tooltip = "ECP port. 8060 unless you have changed it."
+
+[discovery]
+ssdp = ["roku:ecp"]
+mac_oui = ["B0:A7:37", "CC:6D:A0", "D8:31:34"]
