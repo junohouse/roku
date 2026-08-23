@@ -22,8 +22,8 @@ primary = true
 id = 1
 type = "media_player"
 primary = true
-name = "Roku"
-capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
+name = "Roku Home"
+capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_app_launcher = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
 
 # The screen, when there is one. Presented at runtime from `is-tv` in `/query/device-info`,
 # with the set's real inputs rather than a manifest's guess of two HDMI ports — see

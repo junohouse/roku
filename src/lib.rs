@@ -235,7 +235,15 @@ impl DriverModule for Roku {
             return vec![HostCall::warn("roku: set the Address on this device first")];
         };
 
-        // --- launching a channel ---------------------------------------------------------
+        // --- launcher and channels -------------------------------------------------------
+        //
+        // Core deliberately does not turn a launcher source into a d-pad Home press: not every
+        // platform reaches its apps that way. Roku does, through ECP's documented Home key, so
+        // that vendor-specific choice stays here.
+        if cmd == "open_app_launcher" {
+            return Self::keypress(inst, "Home").into_iter().collect();
+        }
+
         if cmd == "launch_app" {
             let Some(want) = args.get("app").and_then(Value::as_str) else {
                 return vec![HostCall::warn("roku: launch_app needs an app name")];
@@ -475,7 +483,7 @@ impl DriverModule for Roku {
                 .filter_map(|(id, name)| {
                     Some(ConnectionDecl {
                         id: connection_id(id)?,
-                        proxy: NODE,
+                        proxy: Some(NODE),
                         dir: Direction::Consumer,
                         class: signal_class(id).into(),
                         name: name.clone(),
@@ -1006,6 +1014,16 @@ mod tests {
     }
 
     #[test]
+    fn the_app_launcher_uses_rokus_home_key() {
+        let calls = Roku.on_command(&mut tv(), MEDIA, "open_app_launcher", &Args::new());
+        let [HostCall::Http(req)] = calls.as_slice() else {
+            panic!("expected one keypress, got {calls:?}");
+        };
+        assert_eq!(req.method, "POST");
+        assert!(req.url.ends_with("/keypress/Home"), "{}", req.url);
+    }
+
+    #[test]
     fn set_input_refuses_a_connection_no_roku_has() {
         let driver = Roku;
         let mut inst = tv();
@@ -1048,7 +1066,11 @@ mod tests {
         let ids: Vec<LocalId> = connections.iter().map(|c| c.id).collect();
         assert_eq!(ids, vec![1001, 1002, 1003, 1201]);
         assert!(!ids.contains(&1004), "this set has three HDMI ports");
-        assert!(connections.iter().all(|c| c.dir == Direction::Consumer && c.proxy == NODE));
+        assert!(
+            connections
+                .iter()
+                .all(|c| c.dir == Direction::Consumer && c.proxy == Some(NODE))
+        );
         assert_eq!(connections.iter().find(|c| c.id == 1201).unwrap().class, "RF_UHF_VHF");
         // Channels are not jacks.
         assert_eq!(connections.len(), 4);
