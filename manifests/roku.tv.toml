@@ -1,0 +1,76 @@
+[driver]
+# A Roku TV: the same streamer as `roku.player`, with a panel bolted to it. One package, two
+# manifests, because the difference is a whole proxy and a proxy is what a manifest declares.
+#
+# Not discoverable on its own — see `roku.player`, which is. Both are `roku:ecp` on port 8060
+# and nothing on the wire tells them apart, so setup probes `is-tv` and hands back this id.
+id = "roku.tv"
+name = "Roku TV"
+manufacturer = "Roku"
+version = "1.0.0"
+runtime = "wasm"
+
+# The streamer, identical to `roku.player`'s. A Roku TV's home screen is a Roku, and the app
+# list, the d-pad and the transport are the same ECP either way.
+[[proxy]]
+id = 1
+type = "media_player"
+primary = true
+name = "Roku Home"
+capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_app_launcher = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
+
+# The panel. `warmup_ms` measured on the sets this has been run against: ECP is accepted while
+# the screen is still coming up, and acted on when it is not.
+[[proxy]]
+id = 2
+type = "tv"
+name = "Screen"
+capabilities = { has_discrete_power = true, has_discrete_input = true, has_volume = true, warmup_ms = 2000 }
+
+# A product-line guess, and replaced on every bind by what this set reports: a Roku TV lists
+# its own inputs among its channels, so the driver answers `HostCall::Connections` with the
+# ports it actually has. The numbering matches, so anything wired before that keeps working.
+[[connection]]
+id = 1001
+proxy = 2
+dir = "consumer"
+class = "HDMI"
+name = "HDMI 1"
+
+[[connection]]
+id = 1002
+proxy = 2
+dir = "consumer"
+class = "HDMI"
+name = "HDMI 2"
+
+[[connection]]
+id = 1003
+proxy = 2
+dir = "consumer"
+class = "HDMI"
+name = "HDMI 3"
+
+[[connection]]
+id = 1201
+proxy = 2
+dir = "consumer"
+class = "RF_UHF_VHF"
+name = "Antenna TV"
+
+[[transport]]
+kind = "network"
+port = 8060
+
+[[property]]
+name = "Address"
+type = "string"
+tooltip = "IP address of the Roku TV"
+
+[[property]]
+name = "Port"
+type = "ranged_int"
+min = 1
+max = 65535
+default = 8060
+tooltip = "ECP port. 8060 unless you have changed it."

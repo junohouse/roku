@@ -1,35 +1,27 @@
 [driver]
 # `roku.player` rather than a bare `roku`: an id namespaces a product under its vendor, and
-# a bare one would take the whole `roku` namespace for a single driver. Every unit this
-# drives *is* a streaming player — that is the `media_player` proxy below — and some of them
-# have a screen bolted on, which arrives as a child. What anybody sees is `name`.
+# a bare one would take the whole `roku` namespace for a single driver. What anybody sees is
+# `name`.
 id = "roku.player"
 name = "Roku"
 manufacturer = "Roku"
 version = "1.0.0"
 runtime = "wasm"
+# The sibling `roku.tv` leads with this one — see `DriverDecl::primary`. Discovery is declared
+# here and only here: both are the same ECP on the same port, so a manifest each claiming
+# `roku:ecp` would offer two rows for one television and ask whoever is adding it a question
+# the device can answer. Setup asks it instead — `is-tv` in `/query/device-info` — and hands
+# back whichever id fits, the same way `apple.tv` hands back `apple.tv.ir`.
 primary = true
 
-# One driver for both, because a Roku Express and a Roku TV are the same streamer — the same
-# ECP on the same port, the same channels, the same keys. The difference is that one of them
-# has a screen bolted to it, and which one you have is not knowable until the box is asked.
-#
-# It used to be two drivers, `roku.tv` and `roku.player`, identical but for a second proxy.
-# That put the question to whoever was adding it: the configurator offered both for the same
-# television, because both claim `roku:ecp` and nothing at that point had asked the device
-# anything.
+# A streamer with no screen of its own: a Streaming Stick, an Express, an Ultra. Volume,
+# power and inputs belong to whatever it is plugged into, which is a different device.
 [[proxy]]
 id = 1
 type = "media_player"
 primary = true
 name = "Roku Home"
 capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_app_launcher = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
-
-# The screen, when there is one. Presented at runtime from `is-tv` in `/query/device-info`,
-# with the set's real inputs rather than a manifest's guess of two HDMI ports — see
-# `HostCall::Present` and `ForNode`.
-[children]
-proxies = ["tv"]
 
 [[transport]]
 kind = "network"

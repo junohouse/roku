@@ -10,6 +10,20 @@
 //!   GET  /query/active-app      what is in the foreground
 //! ```
 //!
+//! # Two manifests, one package
+//!
+//! `roku.player` is a streamer; `roku.tv` is a streamer with a panel bolted to it, declared as a
+//! second `tv` proxy on the same device. Nothing on the wire tells them apart — both answer
+//! `roku:ecp` on 8060 with the same SERVER banner — so only `roku.player` declares discovery,
+//! and setup reads `is-tv` from `/query/device-info` before offering anything and hands back
+//! whichever id the box says it is. Same shape `apple-tv` uses for its IR sibling.
+//!
+//! The screen used to be a presented child *node* instead, on the argument that having a panel
+//! is a fact about the unit rather than the product. It is a fact about the model, setup already
+//! knows it, and as a node it became a second device beside the streamer for somebody to notice
+//! and adopt — where every other television in Juno, `vizio.tv` included, is one device with a
+//! `media_player` and a `tv` on it.
+//!
 //! # "Watch Netflix"
 //!
 //! The whole point of the app list. A Roku's channels are not knowable when the `media_player`
@@ -53,24 +67,19 @@ const LIMITED_MODE: &str =
 
 const MEDIA: LocalId = 1;
 
-/// The screen, when this Roku has one.
+/// The screen, on the manifest that has one.
 ///
-/// A node rather than a second proxy on the same device: whether there is a screen is a fact
-/// about the unit, not about the product, and `[[proxy]]` has to be answered in the manifest.
-/// A Roku TV therefore adopts as a streamer with a `tv` child; a Roku Express adopts as the
-/// streamer alone and grows nothing.
-const SCREEN: &str = "screen";
-
-/// Every presented node's own binding is its first, whatever contract it satisfies.
-const NODE: LocalId = 1;
-
-/// Something the screen has to say, aimed at the screen.
-fn for_screen(note: &str, args: Args) -> HostCall {
-    HostCall::ForNode {
-        node: SCREEN.to_string(),
-        calls: vec![HostCall::notify(NODE, note, args)],
-    }
-}
+/// A second proxy rather than a presented child node, which is what this used to be. Whether a
+/// Roku has a panel is a fact about the *model*, and setup already asks the box — `is-tv` in
+/// `/query/device-info`, before anything is adopted — so it can hand back `roku.tv` or
+/// `roku.player` and the answer is settled in the manifest where a proxy belongs. As a node it
+/// was a second device the installer had to notice and adopt separately, sitting beside the
+/// streamer in the tree rather than inside it, and nothing else in Juno models a television
+/// that way; `vizio.tv` is one device with two proxies and this is now the same shape.
+///
+/// A `roku.player` has no proxy 2 at all, so a command aimed at one is refused below rather
+/// than sent to a stick that would ignore it.
+const TV: LocalId = 2;
 
 /// A connection id for one of a Roku TV's physical inputs, from the channel id it lists it
 /// under — `tvinput.hdmi2` is 1002, matching the manifest's own numbering.
@@ -307,8 +316,40 @@ impl DriverModule for Roku {
             return out;
         }
 
+        // --- the screen -------------------------------------------------------------------
+        //
+        // Same instance, same address: a Roku TV is one box answering one ECP port, and the
+        // panel is reached with the same keys as everything else. The proxy is what separates
+        // them, so `volume_up` on the streamer is refused rather than quietly turning the
+        // television up.
+        if proxy == TV && cmd == "set_input" {
+            // Roku TV models inputs as launchable "channels" too. The connection id is not
+            // the HDMI number: 1001 is HDMI 1, and interpolating it straight into the channel
+            // id asked for `tvinput.hdmi1001`, which no set has — so switching inputs never
+            // worked and said nothing about it.
+            let Some(connection) = args.get("connection").and_then(Value::as_u64) else {
+                return vec![HostCall::warn("roku: set_input needs a connection")];
+            };
+            let Some(input) = tvinput_for(connection) else {
+                return vec![HostCall::warn(format!("roku: no such connection {connection}"))];
+            };
+            let mut a = Args::new();
+            a.insert("connection".into(), json!(connection));
+            return vec![
+                HostCall::Http(HttpRequest::new("POST", format!("{base}/launch/{input}"))),
+                HostCall::notify(TV, "input_changed", a),
+            ];
+        }
+
         // --- everything else is a keypress ------------------------------------------------
         let key = match (proxy, cmd) {
+            (TV, "on") => "PowerOn",
+            (TV, "off") => "PowerOff",
+            (TV, "power_toggle") => "Power",
+            (TV, "volume_up") => "VolumeUp",
+            (TV, "volume_down") => "VolumeDown",
+            (TV, "mute_toggle") => "VolumeMute",
+
             (_, "play") | (_, "pause") => "Play", // Roku has one toggle, not two keys
             (_, "stop") => "Home",
             (_, "skip_forward") => "Fwd",
@@ -358,6 +399,14 @@ impl DriverModule for Roku {
                 a.insert("state".into(), json!("stopped"));
                 out.push(HostCall::notify(MEDIA, "transport_changed", a));
             }
+            "on" | "off" => {
+                let mut a = Args::new();
+                a.insert("on".into(), json!(cmd == "on"));
+                out.push(HostCall::notify(TV, "power_changed", a));
+            }
+            // power_toggle, volume_up/down, mute_toggle: no optimistic notify. Which way a
+            // toggle just went is a guess this driver is not in a better position to make than
+            // reading the set back.
             _ => {}
         }
         out
@@ -401,39 +450,12 @@ impl DriverModule for Roku {
             ];
         }
 
-        // What this box is. `is-tv` is the whole question: a Roku TV grows a screen and a
-        // Roku player does not, and nothing before this point can tell them apart — both
-        // answer `roku:ecp` with the same SERVER banner.
+        // `/query/device-info` is read at bind time and nothing here acts on it any more.
+        // It used to be the whole question — `is-tv` decided whether to present a screen —
+        // and that decision moved to setup, which asks the same field before anything is
+        // adopted and picks `roku.tv` or `roku.player` accordingly. See `TV`.
         if body.contains("<device-info>") {
-            if tag(body, "is-tv").as_deref() != Some("true") {
-                return Vec::new();
-            }
-            let name = tag(body, "friendly-device-name")
-                .or_else(|| tag(body, "user-device-name"))
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| "Screen".into());
-            return vec![HostCall::Present {
-                nodes: vec![Node {
-                    node: SCREEN.into(),
-                    // The set's own name for itself, which is what somebody called it when
-                    // they set the television up.
-                    name,
-                    manufacturer: tag(body, "vendor-name").unwrap_or_else(|| "Roku".into()),
-                    model: tag(body, "model-name").unwrap_or_default(),
-                    kind: "tv".into(),
-                    capabilities: [
-                        ("has_discrete_power".to_string(), json!(true)),
-                        ("has_discrete_input".to_string(), json!(true)),
-                        ("has_volume".to_string(), json!(true)),
-                        // Measured on the sets this has been run against: ECP is accepted
-                        // while the panel is still coming up, and acted on when it is not.
-                        ("warmup_ms".to_string(), json!(2000)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    ..Default::default()
-                }],
-            }];
+            return Vec::new();
         }
 
         // Order matters: an <active-app> document also contains an <app> element, so
@@ -483,7 +505,7 @@ impl DriverModule for Roku {
                 .filter_map(|(id, name)| {
                     Some(ConnectionDecl {
                         id: connection_id(id)?,
-                        proxy: Some(NODE),
+                        proxy: Some(TV),
                         dir: Direction::Consumer,
                         class: signal_class(id).into(),
                         name: name.clone(),
@@ -496,14 +518,13 @@ impl DriverModule for Roku {
             a.insert("apps".into(), json!(names));
             a.insert("app_icons".into(), json!(icons));
             let mut out = vec![HostCall::notify(MEDIA, "apps_changed", a)];
-            // Aimed at the screen, whose inputs they are. A Roku player has no inputs and
-            // lists none, and an empty list would claim it has none rather than that it never
-            // said — so only a set that reported some sends this at all.
+            // The screen's jacks, not the streamer's — hence `proxy: Some(TV)` above. A Roku
+            // player has no inputs and lists none, and an empty list would claim it has none
+            // rather than that it never said, which is a different statement and the one that
+            // makes the manifest's own declaration go away. So only a set that reported some
+            // sends this at all.
             if !connections.is_empty() {
-                out.push(HostCall::ForNode {
-                    node: SCREEN.into(),
-                    calls: vec![HostCall::Connections { connections }],
-                });
+                out.push(HostCall::Connections { connections });
             }
             return out;
         }
@@ -511,74 +532,13 @@ impl DriverModule for Roku {
         Vec::new()
     }
 
-    /// The screen's own commands: power, volume, and which input it is showing.
-    ///
-    /// `inst` is the Roku's, not the screen's — which is what makes this work at all, since
-    /// the address lives on the parent and the screen is the same box at the same address.
-    fn on_node_command(
-        &self,
-        inst: &mut Instance,
-        node: &str,
-        _kind: &str,
-        cmd: &str,
-        args: &Args,
-    ) -> Vec<HostCall> {
-        if node != SCREEN {
-            return vec![HostCall::warn(format!("roku: `{node}` is not a node this driver made"))];
-        }
-        let Some(base) = Self::base(inst) else {
-            return vec![HostCall::warn("roku: set the Address on this device first")];
-        };
-
-        if cmd == "set_input" {
-            // Roku TV models inputs as launchable "channels" too. The connection id is not
-            // the HDMI number: 1001 is HDMI 1, and interpolating it straight into the channel
-            // id asked for `tvinput.hdmi1001`, which no set has — so switching inputs never
-            // worked and said nothing about it.
-            let Some(connection) = args.get("connection").and_then(Value::as_u64) else {
-                return vec![HostCall::warn("roku: set_input needs a connection")];
-            };
-            let Some(input) = tvinput_for(connection) else {
-                return vec![HostCall::warn(format!("roku: no such connection {connection}"))];
-            };
-            let mut a = Args::new();
-            a.insert("connection".into(), json!(connection));
-            return vec![
-                HostCall::Http(HttpRequest::new("POST", format!("{base}/launch/{input}"))),
-                for_screen("input_changed", a),
-            ];
-        }
-
-        let key = match cmd {
-            "on" => "PowerOn",
-            "off" => "PowerOff",
-            "power_toggle" => "Power",
-            "volume_up" => "VolumeUp",
-            "volume_down" => "VolumeDown",
-            "mute_toggle" | "set_mute" => "VolumeMute",
-            other => return vec![HostCall::warn(format!("roku: unhandled `{other}`"))],
-        };
-
-        let mut out: Vec<HostCall> = Self::keypress(inst, key).into_iter().collect();
-        // Roku does not push state, so anything not stated here waits for the next poll.
-        if let "on" | "off" = cmd {
-            let mut a = Args::new();
-            a.insert("on".into(), json!(cmd == "on"));
-            out.push(for_screen("power_changed", a));
-        }
-        out
-    }
-
     fn on_bind(&self, inst: &mut Instance) -> Vec<HostCall> {
         let mut out = Vec::new();
         let mut a = Args::new();
         a.insert("online".into(), json!(true));
         out.push(HostCall::notify(MEDIA, "online_changed", a));
-        // Whether this box has a screen. Asked on every bind rather than remembered from
-        // setup, because a driver that only learned it once would never grow a screen on a
-        // controller whose project was imported, restored, or written by hand.
-        out.extend(Self::get(inst, "/query/device-info"));
-        // Read the channel list before anyone asks for one.
+        // Read the channel list before anyone asks for one. It carries this set's real
+        // inputs as well as its channels, which is what replaces the manifest's guess.
         out.extend(Self::get(inst, "/query/apps"));
         out.extend(Self::get(inst, "/query/active-app"));
         out
@@ -892,9 +852,9 @@ impl Roku {
                     SetupStep::Choose {
                         title: format!("Found {friendly}"),
                         body: if is_tv {
-                            "This is a Roku TV. Its screen arrives beside the streamer once it \
-                             is added — with volume, power, and the inputs the set actually \
-                             reports having."
+                            "This is a Roku TV, so it is added as a streamer and a screen \
+                             together — volume, power, and the inputs the set actually reports \
+                             having, on one device."
                                 .into()
                         } else {
                             "This is a Roku player, so it offers the streamer only. It has no \
@@ -904,9 +864,11 @@ impl Roku {
                         options: vec![Candidate {
                             label: friendly,
                             kind: model,
-                            // One driver either way. Whether there is a screen is settled
-                            // after adoption, by the box itself — see `SCREEN`.
-                            driver_id: "roku.player".into(),
+                            // The one place the two manifests are told apart, and the reason
+                            // only `roku.player` declares discovery: both are `roku:ecp` on
+                            // 8060 and the wire cannot tell them apart, but by here the box has
+                            // been asked. See `TV`.
+                            driver_id: if is_tv { "roku.tv" } else { "roku.player" }.into(),
                             properties: [
                                 ("Address".to_string(), json!(address)),
                                 ("Port".to_string(), json!(8060)),
@@ -957,42 +919,43 @@ mod tests {
         inst
     }
 
-    /// A Roku TV grows a screen; a Roku player does not. Nothing before this can tell them
-    /// apart — both answer `roku:ecp` with the same SERVER banner, and both are this driver.
+    /// A Roku TV is added as `roku.tv`, a stick as `roku.player`, and the box is what decides.
+    ///
+    /// The whole reason the two manifests can exist without asking whoever is adding one: both
+    /// answer `roku:ecp` with the same SERVER banner, so discovery cannot tell them apart — but
+    /// setup has already read `/query/device-info` by the time it offers anything.
     #[test]
-    fn a_television_presents_a_screen_and_a_player_presents_nothing() {
-        let driver = Roku;
-        let reply = |xml: &str| {
-            let mut a = Args::new();
-            a.insert("body".into(), json!(xml));
-            driver.on_event(&mut tv(), 0, "http_response", &a)
+    fn setup_offers_the_manifest_the_box_says_it_is() {
+        let offered = |xml: &str| {
+            let mut input = Args::new();
+            input.insert("response".into(), json!(xml));
+            let state = json!({
+                "phase": "probed", "address": "10.0.0.5", "checked_control": true, "info": xml,
+            });
+            match Roku.setup("roku.player", &state, &input).0 {
+                SetupStep::Choose { options, .. } => options[0].driver_id.clone(),
+                other => panic!("expected a choice, got {other:?}"),
+            }
         };
 
         // Recorded from a real set at 192.168.1.157.
-        let calls = reply(
-            r#"<device-info><vendor-name>Hisense</vendor-name><model-name>40H4030</model-name>
-               <is-tv>true</is-tv><is-stick>false</is-stick>
-               <friendly-device-name>40" Hisense Roku TV</friendly-device-name></device-info>"#,
+        assert_eq!(
+            offered(
+                r#"<device-info><vendor-name>Hisense</vendor-name><model-name>40H4030</model-name>
+                   <is-tv>true</is-tv><is-stick>false</is-stick>
+                   <friendly-device-name>40" Hisense Roku TV</friendly-device-name></device-info>"#,
+            ),
+            "roku.tv",
         );
-        let [HostCall::Present { nodes }] = calls.as_slice() else {
-            panic!("expected a screen, got {calls:?}");
-        };
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].node, SCREEN);
-        assert_eq!(nodes[0].kind, "tv");
-        assert_eq!(nodes[0].name, "40\" Hisense Roku TV", "what its owner called it");
-        assert_eq!(nodes[0].manufacturer, "Hisense");
-        assert_eq!(nodes[0].capabilities["has_volume"], json!(true));
 
-        // A stick. Same driver, same protocol, no panel attached to it.
-        let calls = reply(
-            r#"<device-info><vendor-name>Roku</vendor-name><model-name>Streaming Stick 4K</model-name>
-               <is-tv>false</is-tv><is-stick>true</is-stick></device-info>"#,
-        );
-        assert!(
-            calls.is_empty(),
-            "a player has no screen, and presenting an empty one would offer a television \
-             nobody owns — got {calls:?}",
+        // A stick. Same driver package, same protocol, no panel attached to it — and offering
+        // the `tv` proxy anyway would put volume and inputs on a television nobody owns.
+        assert_eq!(
+            offered(
+                r#"<device-info><vendor-name>Roku</vendor-name><model-name>Streaming Stick 4K</model-name>
+                   <is-tv>false</is-tv><is-stick>true</is-stick></device-info>"#,
+            ),
+            "roku.player",
         );
     }
 
@@ -1005,12 +968,31 @@ mod tests {
         let mut inst = tv();
         let mut a = Args::new();
         a.insert("connection".into(), json!(1002u64));
-        let calls = driver.on_node_command(&mut inst, SCREEN, "tv", "set_input", &a);
-        let [HostCall::Http(req), HostCall::ForNode { node, .. }] = calls.as_slice() else {
-            panic!("expected a launch and a notify aimed at the screen, got {calls:?}");
+        let calls = driver.on_command(&mut inst, TV, "set_input", &a);
+        let [HostCall::Http(req), HostCall::Notify { proxy, name, .. }] = calls.as_slice() else {
+            panic!("expected a launch and a notify from the screen, got {calls:?}");
         };
-        assert_eq!(node, SCREEN);
+        assert_eq!(*proxy, TV);
+        assert_eq!(name, "input_changed");
         assert!(req.url.ends_with("/launch/tvinput.hdmi2"), "{}", req.url);
+    }
+
+    /// Volume and power belong to the panel. Sent to the streamer they used to work anyway —
+    /// same box, same port — which is exactly what made a Roku player look like it had a
+    /// volume control.
+    #[test]
+    fn the_screens_keys_are_the_screens() {
+        let calls = Roku.on_command(&mut tv(), TV, "volume_up", &Args::new());
+        let [HostCall::Http(req)] = calls.as_slice() else {
+            panic!("expected one keypress, got {calls:?}");
+        };
+        assert!(req.url.ends_with("/keypress/VolumeUp"), "{}", req.url);
+
+        let calls = Roku.on_command(&mut tv(), MEDIA, "volume_up", &Args::new());
+        assert!(
+            matches!(calls.as_slice(), [HostCall::Log { level, .. }] if level == "warn"),
+            "a streamer has no volume of its own — got {calls:?}",
+        );
     }
 
     #[test]
@@ -1029,7 +1011,7 @@ mod tests {
         let mut inst = tv();
         let mut a = Args::new();
         a.insert("connection".into(), json!(7u64));
-        let calls = driver.on_node_command(&mut inst, SCREEN, "tv", "set_input", &a);
+        let calls = driver.on_command(&mut inst, TV, "set_input", &a);
         assert!(matches!(calls.as_slice(), [HostCall::Log { level, .. }] if level == "warn"));
     }
 
@@ -1050,17 +1032,11 @@ mod tests {
         let mut a = Args::new();
         a.insert("body".into(), json!(xml));
         let calls = driver.on_event(&mut inst, 0, "http_response", &a);
-        // Aimed at the screen: they are the screen's jacks, not the streamer's.
         let Some(connections) = calls.iter().find_map(|c| match c {
-            HostCall::ForNode { node, calls } if node == SCREEN => {
-                calls.iter().find_map(|c| match c {
-                    HostCall::Connections { connections } => Some(connections.clone()),
-                    _ => None,
-                })
-            }
+            HostCall::Connections { connections } => Some(connections.clone()),
             _ => None,
         }) else {
-            panic!("expected connections aimed at the screen, got {calls:?}");
+            panic!("expected connections, got {calls:?}");
         };
 
         let ids: Vec<LocalId> = connections.iter().map(|c| c.id).collect();
@@ -1069,7 +1045,8 @@ mod tests {
         assert!(
             connections
                 .iter()
-                .all(|c| c.dir == Direction::Consumer && c.proxy == Some(NODE))
+                .all(|c| c.dir == Direction::Consumer && c.proxy == Some(TV as LocalId)),
+            "the screen's jacks, not the streamer's"
         );
         assert_eq!(connections.iter().find(|c| c.id == 1201).unwrap().class, "RF_UHF_VHF");
         // Channels are not jacks.
