@@ -519,10 +519,9 @@ impl DriverModule for Roku {
             a.insert("app_icons".into(), json!(icons));
             let mut out = vec![HostCall::notify(MEDIA, "apps_changed", a)];
             // The screen's jacks, not the streamer's — hence `proxy: Some(TV)` above. A Roku
-            // player has no inputs and lists none, and an empty list would claim it has none
-            // rather than that it never said, which is a different statement and the one that
-            // makes the manifest's own declaration go away. So only a set that reported some
-            // sends this at all.
+            // player has no inputs and lists none, and an empty list would pin "this device has
+            // no connections" on the project rather than leaving it never-said. So only a set
+            // that reported some sends this at all.
             if !connections.is_empty() {
                 out.push(HostCall::Connections { connections });
             }
@@ -1015,8 +1014,9 @@ mod tests {
         assert!(matches!(calls.as_slice(), [HostCall::Log { level, .. }] if level == "warn"));
     }
 
-    /// A Roku TV lists its inputs among its channels, so the set says how many HDMI ports it
-    /// has and the manifest's guess of two stops being the answer.
+    /// A Roku TV lists its inputs among its channels, so the set itself says how many HDMI
+    /// ports it has — which is the only place they come from, since neither manifest declares
+    /// any.
     #[test]
     fn the_channel_list_reports_the_sets_real_inputs() {
         let driver = Roku;

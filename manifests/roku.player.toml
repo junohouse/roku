@@ -23,10 +23,10 @@ primary = true
 name = "Roku Home"
 capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_app_launcher = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
 
+# No port: ECP requests are `HostCall::Http` with a full URL, built from the device's own
+# `Port` property falling back to 8060 in the driver. Core dials nothing here.
 [[transport]]
 kind = "network"
-port = 8060
-discovery = "ssdp"
 
 [[property]]
 name = "Address"

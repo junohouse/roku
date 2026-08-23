@@ -27,40 +27,15 @@ type = "tv"
 name = "Screen"
 capabilities = { has_discrete_power = true, has_discrete_input = true, has_volume = true, warmup_ms = 2000 }
 
-# A product-line guess, and replaced on every bind by what this set reports: a Roku TV lists
-# its own inputs among its channels, so the driver answers `HostCall::Connections` with the
-# ports it actually has. The numbering matches, so anything wired before that keeps working.
-[[connection]]
-id = 1001
-proxy = 2
-dir = "consumer"
-class = "HDMI"
-name = "HDMI 1"
+# No `[[connection]]` blocks. A Roku TV lists its own inputs among its channels, so the driver
+# answers `HostCall::Connections` with the ports this set actually has — and a product-line
+# guess here could only be wrong for every individual set, giving a three-HDMI panel a fourth
+# jack the pathfinder would happily route a room through. `roku.player` has declared none all
+# along; this is the panel catching up.
 
-[[connection]]
-id = 1002
-proxy = 2
-dir = "consumer"
-class = "HDMI"
-name = "HDMI 2"
-
-[[connection]]
-id = 1003
-proxy = 2
-dir = "consumer"
-class = "HDMI"
-name = "HDMI 3"
-
-[[connection]]
-id = 1201
-proxy = 2
-dir = "consumer"
-class = "RF_UHF_VHF"
-name = "Antenna TV"
-
+# No port — see `roku.player`: the driver builds the whole ECP URL itself.
 [[transport]]
 kind = "network"
-port = 8060
 
 [[property]]
 name = "Address"
