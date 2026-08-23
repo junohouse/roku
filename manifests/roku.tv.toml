@@ -10,22 +10,36 @@ manufacturer = "Roku"
 version = "1.0.0"
 runtime = "wasm"
 
-# The streamer, identical to `roku.player`'s. A Roku TV's home screen is a Roku, and the app
-# list, the d-pad and the transport are the same ECP either way.
-[[proxy]]
-id = 1
-type = "media_player"
-primary = true
-name = "Roku Home"
-capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_app_launcher = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
-
-# The panel. `warmup_ms` measured on the sets this has been run against: ECP is accepted while
-# the screen is still coming up, and acted on when it is not.
+# The panel, declared first and marked primary, so a Roku TV reads as a *television* with a
+# streamer inside it. That is what one is: somebody bought a television. Bindings are created in
+# the order this file declares them — see `Project::install` — so this is also what leads in the
+# tree, and `primary` is what the assistant falls back to when a command could go to either.
+#
+# The streamer led here at first, matching `roku.player`, and it was the wrong way round: it put
+# "Roku Home" at the top of a device somebody calls the living room TV, with the screen filed
+# underneath as an accessory of its own launcher.
+#
+# `warmup_ms` measured on the sets this has been run against: ECP is accepted while the screen is
+# still coming up, and acted on when it is not.
 [[proxy]]
 id = 2
 type = "tv"
+primary = true
 name = "Screen"
 capabilities = { has_discrete_power = true, has_discrete_input = true, has_volume = true, warmup_ms = 2000 }
+
+# The streamer, identical to `roku.player`'s. A Roku TV's home screen is a Roku, and the app
+# list, the d-pad and the transport are the same ECP either way.
+#
+# Still id 1, though it is declared second. The ids are the driver's own addressing and the code
+# is shared between both manifests — `MEDIA` is 1 and `TV` is 2 whichever one is loaded — so
+# renumbering to match the reading order would mean a driver that has to know which manifest it
+# is answering as before it can send a notification.
+[[proxy]]
+id = 1
+type = "media_player"
+name = "Roku Home"
+capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpad = true, has_apps = true, has_app_launcher = true, has_deep_link = true, has_search = true, is_video_source = true, is_audio_source = true }
 
 # No `[[connection]]` blocks. A Roku TV lists its own inputs among its channels, so the driver
 # answers `HostCall::Connections` with the ports this set actually has — and a product-line

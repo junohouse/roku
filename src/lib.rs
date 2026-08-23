@@ -12,8 +12,10 @@
 //!
 //! # Two manifests, one package
 //!
-//! `roku.player` is a streamer; `roku.tv` is a streamer with a panel bolted to it, declared as a
-//! second `tv` proxy on the same device. Nothing on the wire tells them apart — both answer
+//! `roku.player` is a streamer. `roku.tv` is a television with that same streamer inside it, and
+//! it leads with the `tv` proxy for that reason: somebody bought a television, and filing the
+//! screen underneath its own launcher reads as an accessory of the app menu. Nothing on the wire
+//! tells the two apart — both answer
 //! `roku:ecp` on 8060 with the same SERVER banner — so only `roku.player` declares discovery,
 //! and setup reads `is-tv` from `/query/device-info` before offering anything and hands back
 //! whichever id the box says it is. Same shape `apple-tv` uses for its IR sibling.
@@ -67,7 +69,7 @@ const LIMITED_MODE: &str =
 
 const MEDIA: LocalId = 1;
 
-/// The screen, on the manifest that has one.
+/// The screen, on the manifest that has one — and the proxy that manifest leads with.
 ///
 /// A second proxy rather than a presented child node, which is what this used to be. Whether a
 /// Roku has a panel is a fact about the *model*, and setup already asks the box — `is-tv` in
@@ -1062,6 +1064,38 @@ mod tests {
             !calls.iter().any(|c| matches!(c, HostCall::Connections { .. })),
             "got {calls:?}"
         );
+    }
+
+    /// A Roku TV leads with its screen, and a Roku player has no screen to lead with.
+    ///
+    /// A product decision that lives entirely in the order and flags of a TOML file, so nothing
+    /// about the code would break if somebody tidied the two proxies back into id order. What
+    /// would break is the reading: a device somebody calls the living room television, filed in
+    /// the tree under "Roku Home", with the screen underneath as an accessory of the app menu.
+    /// Bindings are created in declaration order — see `Project::install` — and `primary` is
+    /// what the assistant falls back to when a command could go to either.
+    ///
+    /// Read as text rather than parsed. `Manifest` lives behind the SDK's `contracts` feature,
+    /// which a driver does not compile, and this is not worth being the first one that does:
+    /// `junod validate-driver` already checks the manifest is *valid* on every release, and the
+    /// only thing it cannot check is which of two valid orders somebody meant.
+    #[test]
+    fn a_roku_tv_leads_with_its_screen() {
+        let tv = include_str!("../manifests/roku.tv.toml");
+        let screen = tv.find(r#"type = "tv""#).expect("roku.tv declares a screen");
+        let player = tv.find(r#"type = "media_player""#).expect("and the streamer in it");
+        assert!(screen < player, "the television is the device; the streamer is inside it");
+        assert!(
+            tv[screen..player].contains("primary = true"),
+            "and it is what the driver leads with",
+        );
+        assert!(
+            !tv[player..].contains("primary = true"),
+            "only one proxy may be primary, and it is not this one",
+        );
+
+        let stick = include_str!("../manifests/roku.player.toml");
+        assert!(!stick.contains(r#"type = "tv""#), "a stick has no panel to offer");
     }
 
     #[test]

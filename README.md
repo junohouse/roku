@@ -7,10 +7,15 @@ carries both a `media_player` and a `tv` proxy: "watch Netflix" goes to one, vol
 other. A player is the same box without the screen, and the same control code drives both, so
 shipping them apart would mean maintaining one implementation twice.
 
-| Driver | Proxies |
-| --- | --- |
-| `roku.tv` | `media_player`, `tv` |
-| `roku.player` | `media_player` |
+| Driver | Proxies | Leads with |
+| --- | --- | --- |
+| `roku.tv` | `tv`, `media_player` | `tv` — it is a television, with a streamer in it |
+| `roku.player` | `media_player` | `media_player` |
+
+Which of the two you get is not a question anybody is asked. Both are `roku:ecp` on port 8060
+and nothing on the wire separates them, so only `roku.player` declares discovery; setup reads
+`is-tv` out of `/query/device-info` before it offers anything and hands back whichever id the
+box says it is.
 
 ## Setup
 
