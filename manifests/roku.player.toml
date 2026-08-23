@@ -7,6 +7,10 @@ name = "Roku"
 manufacturer = "Roku"
 version = "1.0.0"
 runtime = "wasm"
+# What this driver is worth hearing when nothing is wrong. Declaring it is also what lets an
+# installer change it from the Logs page; a driver that declares nothing sits at `info` with
+# no control. Everything it prints rather than logs is taken as `debug` and held to this too.
+log_level = "info"
 # The sibling `roku.tv` leads with this one — see `DriverDecl::primary`. Discovery is declared
 # here and only here: both are the same ECP on the same port, so a manifest each claiming
 # `roku:ecp` would offer two rows for one television and ask whoever is adding it a question
