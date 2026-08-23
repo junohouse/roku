@@ -33,7 +33,8 @@ capabilities = { has_discrete_power = true, has_discrete_input = true, has_volum
 # jack the pathfinder would happily route a room through. `roku.player` has declared none all
 # along; this is the panel catching up.
 
-# No port — see `roku.player`: the driver builds the whole ECP URL itself.
+# No port here — the `Port` property below carries it, defaulting to 8060, and core reads
+# that first when it resolves this driver's relative URLs.
 [[transport]]
 kind = "network"
 

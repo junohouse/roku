@@ -122,6 +122,9 @@ fn tvinput_for(connection: u64) -> Option<String> {
 }
 
 impl Roku {
+    /// An absolute base, for the one thing that still needs one: the artwork URLs handed to a
+    /// screen, which a browser dereferences rather than core. Requests go out as bare paths and
+    /// are resolved against this device by core — see `HostCall::Http`.
     fn base(inst: &Instance) -> Option<String> {
         let addr = inst.property("Address").as_str()?.trim().to_string();
         if addr.is_empty() {
@@ -131,18 +134,12 @@ impl Roku {
         Some(format!("http://{addr}:{port}"))
     }
 
-    fn keypress(inst: &Instance, key: &str) -> Option<HostCall> {
-        Some(HostCall::Http(HttpRequest::new(
-            "POST",
-            format!("{}/keypress/{key}", Self::base(inst)?),
-        )))
+    fn keypress(key: &str) -> HostCall {
+        HostCall::Http(HttpRequest::new("POST", format!("/keypress/{key}")))
     }
 
-    fn get(inst: &Instance, path: &str) -> Option<HostCall> {
-        Some(HostCall::Http(HttpRequest::new(
-            "GET",
-            format!("{}{path}", Self::base(inst)?),
-        )))
+    fn get(path: &str) -> HostCall {
+        HostCall::Http(HttpRequest::new("GET", path))
     }
 
     /// Installed channels, from `id` to display name, cached on the instance at bind time.
@@ -240,17 +237,13 @@ impl DriverModule for Roku {
         cmd: &str,
         args: &Args,
     ) -> Vec<HostCall> {
-        let Some(base) = Self::base(inst) else {
-            return vec![HostCall::warn("roku: set the Address on this device first")];
-        };
-
         // --- launcher and channels -------------------------------------------------------
         //
         // Core deliberately does not turn a launcher source into a d-pad Home press: not every
         // platform reaches its apps that way. Roku does, through ECP's documented Home key, so
         // that vendor-specific choice stays here.
         if cmd == "open_app_launcher" {
-            return Self::keypress(inst, "Home").into_iter().collect();
+            return vec![Self::keypress("Home")];
         }
 
         if cmd == "launch_app" {
@@ -271,7 +264,7 @@ impl DriverModule for Roku {
                 ))];
             };
 
-            let mut url = format!("{base}/launch/{id}");
+            let mut url = format!("/launch/{id}");
             if let Some(content) = args.get("content_id").and_then(Value::as_str) {
                 // ECP wants to be told what the id refers to, and gets it wrong when it is not.
                 // This was hardcoded to `movie`, so every series deep link asked Roku to open a
@@ -336,7 +329,7 @@ impl DriverModule for Roku {
             let mut a = Args::new();
             a.insert("connection".into(), json!(connection));
             return vec![
-                HostCall::Http(HttpRequest::new("POST", format!("{base}/launch/{input}"))),
+                HostCall::Http(HttpRequest::new("POST", format!("/launch/{input}"))),
                 HostCall::notify(TV, "input_changed", a),
             ];
         }
@@ -379,7 +372,7 @@ impl DriverModule for Roku {
         };
 
         let mut out = Vec::new();
-        out.extend(Self::keypress(inst, key));
+        out.push(Self::keypress(key));
 
         // Report what we know changed. Roku does not push state, so anything not stated here
         // waits for the next poll.
@@ -531,15 +524,15 @@ impl DriverModule for Roku {
         Vec::new()
     }
 
-    fn on_bind(&self, inst: &mut Instance) -> Vec<HostCall> {
+    fn on_bind(&self, _inst: &mut Instance) -> Vec<HostCall> {
         let mut out = Vec::new();
         let mut a = Args::new();
         a.insert("online".into(), json!(true));
         out.push(HostCall::notify(MEDIA, "online_changed", a));
         // Read the channel list before anyone asks for one. It carries this set's real
         // inputs as well as its channels, which is what replaces the manifest's guess.
-        out.extend(Self::get(inst, "/query/apps"));
-        out.extend(Self::get(inst, "/query/active-app"));
+        out.push(Self::get("/query/apps"));
+        out.push(Self::get("/query/active-app"));
         out
     }
 }
@@ -973,7 +966,10 @@ mod tests {
         };
         assert_eq!(*proxy, TV);
         assert_eq!(name, "input_changed");
-        assert!(req.url.ends_with("/launch/tvinput.hdmi2"), "{}", req.url);
+        // Device-relative: core resolves the address, the port and the scheme against the
+        // project. The driver spelling out `http://<addr>:8060` was the third place 8060 was
+        // written down, after the manifest and the `Port` property it already reads.
+        assert_eq!(req.url, "/launch/tvinput.hdmi2");
     }
 
     /// Volume and power belong to the panel. Sent to the streamer they used to work anyway —
@@ -985,7 +981,7 @@ mod tests {
         let [HostCall::Http(req)] = calls.as_slice() else {
             panic!("expected one keypress, got {calls:?}");
         };
-        assert!(req.url.ends_with("/keypress/VolumeUp"), "{}", req.url);
+        assert_eq!(req.url, "/keypress/VolumeUp");
 
         let calls = Roku.on_command(&mut tv(), MEDIA, "volume_up", &Args::new());
         assert!(
@@ -1001,7 +997,7 @@ mod tests {
             panic!("expected one keypress, got {calls:?}");
         };
         assert_eq!(req.method, "POST");
-        assert!(req.url.ends_with("/keypress/Home"), "{}", req.url);
+        assert_eq!(req.url, "/keypress/Home");
     }
 
     #[test]
