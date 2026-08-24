@@ -29,8 +29,10 @@ capabilities = { has_transport = true, has_skip = true, has_scan = true, has_dpa
 
 # No port here — the `Port` property below carries it, defaulting to 8060, and core reads
 # that first when it resolves this driver's relative URLs.
-[[transport]]
+[[control]]
+id = 1
 kind = "network"
+name = "ECP"
 
 [[property]]
 name = "Address"
