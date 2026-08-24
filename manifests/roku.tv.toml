@@ -8,6 +8,12 @@ id = "roku.tv"
 name = "Roku TV"
 manufacturer = "Roku"
 version = "1.0.0"
+# The same product as `roku.player`, and reached the same way — both are `roku:ecp` on 8060,
+# which is why nothing on the wire tells them apart and why setup probes `is-tv` instead. So
+# this is not another way in and nobody is asked to choose: the catalog carries one Roku, and
+# because the two halves lead with different proxies it is found under both Media Players and
+# TVs, drawn as whichever shelf it was found on.
+variant_of = "roku.player"
 runtime = "wasm"
 # What this driver is worth hearing when nothing is wrong. Declaring it is also what lets an
 # installer change it from the Logs page; a driver that declares nothing sits at `info` with
