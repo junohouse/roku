@@ -588,6 +588,27 @@ impl Roku {
         ))
     }
 
+    /// The one responder in the seed, when there is exactly one.
+    ///
+    /// Core seeds a flow started from a Discovery row with the candidates for that one address,
+    /// and a flow started cold with everything a search turned up — so one is the row somebody
+    /// pressed and several is a real question. `None` for either of the other two cases.
+    fn the_only_candidate(state: &Value) -> Option<String> {
+        let found = state.get("ssdp_candidates")?.as_array()?;
+        let [only] = found.as_slice() else { return None };
+        let address = only.get("address")?.as_str()?.trim();
+        (!address.is_empty()).then(|| address.trim_end_matches(":8060").to_string())
+    }
+
+    /// Ask a box what it is. The one request every way into this flow ends up making, because
+    /// `is-tv` is what decides which of the two manifests it is offered as.
+    fn probe_for(address: &str) -> SetupStep {
+        SetupStep::Fetch {
+            request: HttpRequest::new("GET", format!("http://{address}:8060/query/device-info")),
+            note: "asking the Roku what it is".into(),
+        }
+    }
+
     fn ask_for_address(state: &Value) -> (SetupStep, Value) {
         let typed = Field {
             name: "address".into(),
@@ -699,6 +720,21 @@ impl Roku {
 
         match phase {
             "start" => {
+                // One responder is the one that was pressed. Reaching this flow from a row in
+                // Discovery means the search has already happened and its answer is the thing on
+                // screen — so asking somebody to find it in a list of one, and then to confirm
+                // it on a second screen, is asking the same question three times. Straight to
+                // the probe, which is the only part that has anything left to learn.
+                //
+                // Told from a general search by there being exactly one: core seeds a row with
+                // the candidates for that one address, and a search with everything it found.
+                // Several is a genuine question and still gets the list.
+                if let Some(only) = Self::the_only_candidate(state) {
+                    return (
+                        Self::probe_for(&only),
+                        json!({ "phase": "probed", "address": only, "chosen": true }),
+                    );
+                }
                 // Put a name to each responder before showing the list.
                 match Self::enrich(state) {
                     Some(next) => next,
@@ -750,19 +786,16 @@ impl Roku {
                 };
                 let address = address.trim().trim_end_matches(":8060").to_string();
                 (
-                    SetupStep::Fetch {
-                        request: HttpRequest::new(
-                            "GET",
-                            format!("http://{address}:8060/query/device-info"),
-                        ),
-                        note: "asking the Roku what it is".into(),
-                    },
-                    // Every arm rebuilds state from scratch, so anything that has to outlive
-                    // one transition has to be re-stated here. `nagged` is the only such flag:
-                    // dropping it sends the Limited-mode notice round forever.
+                    Self::probe_for(&address),
+                    // Every arm rebuilds state from scratch, so anything that has to outlive one
+                    // transition has to be re-stated here. `nagged` stops the Limited-mode notice
+                    // going round forever; `chosen` remembers that somebody already pointed at
+                    // this box, which a retry after that notice would otherwise forget — and the
+                    // confirmation screen would come back for a device already chosen twice.
                     json!({
                         "phase": "probed", "address": address,
                         "nagged": state.get("nagged").and_then(Value::as_bool).unwrap_or(false),
+                        "chosen": state.get("chosen").and_then(Value::as_bool).unwrap_or(false),
                     }),
                 )
             }
@@ -814,6 +847,12 @@ impl Roku {
                             "info": xml,
                             "nagged": state.get("nagged").and_then(Value::as_bool)
                                            .unwrap_or(false),
+                            // Carried, like everything else that has to outlive a transition:
+                            // dropping it here put the confirmation screen back in front of a
+                            // box somebody had already pressed, which is the whole thing this
+                            // flag exists to prevent.
+                            "chosen": state.get("chosen").and_then(Value::as_bool)
+                                           .unwrap_or(false),
                         }),
                     );
                 }
@@ -838,8 +877,47 @@ impl Roku {
                             ),
                             continue_label: "Check again".into(),
                         },
-                        json!({ "phase": "probe", "address": address, "nagged": true }),
+                        json!({
+                            "phase": "probe", "address": address, "nagged": true,
+                            "chosen": state.get("chosen").and_then(Value::as_bool)
+                                           .unwrap_or(false),
+                        }),
                     );
+                }
+
+                let offer = Candidate {
+                    label: friendly.clone(),
+                    kind: model.clone(),
+                    // The one place the two manifests are told apart, and the reason only
+                    // `roku.player` declares discovery: both are `roku:ecp` on 8060 and the wire
+                    // cannot tell them apart, but by here the box has been asked. See `TV`.
+                    driver_id: if is_tv { "roku.tv" } else { "roku.player" }.into(),
+                    properties: [
+                        ("Address".to_string(), json!(address)),
+                        ("Port".to_string(), json!(8060)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    verified: if limited {
+                        format!(
+                            "answered ECP, power {power} — set to Limited control, so its \
+                             channel list is a guess"
+                        )
+                    } else {
+                        format!("answered ECP, power {power}")
+                    },
+                    ..Default::default()
+                };
+
+                // Somebody pressed this box in Discovery. Offering it back as the only row of a
+                // list to choose from is asking the same question a second time — the search
+                // already happened, and its answer is what started this. Straight to adding it,
+                // the way `vizio.tv` does after a pairing names one television three times.
+                //
+                // Only where the box was pointed at. A flow that started cold, or one where the
+                // list had several rows, still confirms: there the question is real.
+                if state.get("chosen").and_then(Value::as_bool) == Some(true) {
+                    return (SetupStep::done(vec![offer]), Value::Null);
                 }
 
                 (
@@ -855,30 +933,7 @@ impl Roku {
                              volume or inputs of its own."
                                 .to_string()
                         },
-                        options: vec![Candidate {
-                            label: friendly,
-                            kind: model,
-                            // The one place the two manifests are told apart, and the reason
-                            // only `roku.player` declares discovery: both are `roku:ecp` on
-                            // 8060 and the wire cannot tell them apart, but by here the box has
-                            // been asked. See `TV`.
-                            driver_id: if is_tv { "roku.tv" } else { "roku.player" }.into(),
-                            properties: [
-                                ("Address".to_string(), json!(address)),
-                                ("Port".to_string(), json!(8060)),
-                            ]
-                            .into_iter()
-                            .collect(),
-                            verified: if limited {
-                                format!(
-                                    "answered ECP, power {power} — set to Limited control, so \
-                                     its channel list is a guess"
-                                )
-                            } else {
-                                format!("answered ECP, power {power}")
-                            },
-                                                    ..Default::default()
-                        }],
+                        options: vec![offer],
                         multiple: false,
                     },
                     json!({ "phase": "chosen", "address": address }),
@@ -950,6 +1005,64 @@ mod tests {
                    <is-tv>false</is-tv><is-stick>true</is-stick></device-info>"#,
             ),
             "roku.player",
+        );
+    }
+
+    /// Pressing a Roku in Discovery adds it, without asking twice more.
+    ///
+    /// The search has already happened and its answer is the row that was pressed — so a list of
+    /// one to pick from, and then a screen to confirm the pick, are the same question asked
+    /// three times. Only the probe is left, because `is-tv` decides which of the two manifests
+    /// it is offered as and nothing before that point knows.
+    #[test]
+    fn a_roku_pressed_in_discovery_is_not_offered_back_as_a_list_of_one() {
+        let seed = json!({
+            "ssdp_candidates": [{ "address": "192.168.1.157", "usn": "uuid:roku:ecp:X" }],
+        });
+        let (step, state) = Roku.discover("roku.player", &seed, &Args::new());
+        let SetupStep::Fetch { request, .. } = step else {
+            panic!("straight to the probe, not a list: {step:?}");
+        };
+        assert!(request.url.ends_with("/query/device-info"), "{}", request.url);
+
+        // The set answers, and it is added — no `Choose` in between.
+        let mut probed = Args::new();
+        probed.insert(
+            "response".into(),
+            json!(r#"<device-info><is-tv>true</is-tv><model-name>40H4030</model-name>
+                     <user-device-name>40" Hisense Roku TV</user-device-name>
+                     <power-mode>PowerOn</power-mode></device-info>"#),
+        );
+        // One more request in between — reachable is not the same as controllable, so the flow
+        // asks for the channel list before it offers anything. Then it is added.
+        let (step, state) = Roku.setup("roku.player", &state, &probed);
+        assert!(matches!(step, SetupStep::Fetch { .. }), "the control check: {step:?}");
+
+        let mut apps = Args::new();
+        apps.insert("response".into(), json!(r#"<apps><app id="12">Netflix</app></apps>"#));
+        let (step, _) = Roku.setup("roku.player", &state, &apps);
+        let SetupStep::Done { devices, .. } = step else {
+            panic!("added, not offered back to be confirmed: {step:?}");
+        };
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].driver_id, "roku.tv", "the box said it has a screen");
+        assert_eq!(devices[0].label, "40\" Hisense Roku TV");
+    }
+
+    /// A search that turned up several is a real question, and still gets asked.
+    #[test]
+    fn several_rokus_are_still_offered_as_a_list() {
+        let seed = json!({
+            "ssdp_candidates": [
+                { "address": "192.168.1.157" },
+                { "address": "192.168.1.158" },
+            ],
+        });
+        let (step, _) = Roku.discover("roku.player", &seed, &Args::new());
+        assert!(
+            matches!(step, SetupStep::Fetch { ref request, .. } if request.url.contains("device-info"))
+                || matches!(step, SetupStep::Pick { .. }),
+            "two boxes is a choice: {step:?}",
         );
     }
 
