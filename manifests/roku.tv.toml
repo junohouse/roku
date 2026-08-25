@@ -69,6 +69,18 @@ name = "Address"
 type = "string"
 tooltip = "IP address of the Roku TV"
 
+# Nothing about ECP is pushed: the set answers when asked and never volunteers. So a television
+# somebody turned on with its own remote is one this house believes is off until it asks, and
+# `on_bind` — which core re-runs on this interval — is the asking. See `power-mode` in `lib.rs`.
+[[property]]
+name = "Poll interval"
+type = "ranged_int"
+min = 5
+max = 900
+default = 10
+unit = "s"
+tooltip = "How often to ask the set where it stands. Local, so this can be seconds."
+
 [[property]]
 name = "Port"
 type = "ranged_int"

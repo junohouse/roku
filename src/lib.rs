@@ -375,6 +375,17 @@ impl DriverModule for Roku {
 
         let mut out = Vec::new();
         out.push(Self::keypress(key));
+        // Having pressed it, ask what happened. A power key with nothing behind it leaves the
+        // house believing whatever it believed before — and `Runtime::showing_on_sink` refuses
+        // to route a d-pad press at a screen it thinks is off, so a television just turned on
+        // would stop taking arrows until the next poll came round.
+        //
+        // It may still read the old value: a set takes a moment to wake, which is the same fact
+        // `warmup_ms` states from the pathfinder's side. A stale reading the next poll corrects
+        // is the honest failure; a claim that stays wrong while the set sits dark is not.
+        if matches!(cmd, "on" | "off" | "power_toggle") {
+            out.push(Self::get("/query/device-info"));
+        }
 
         // Report what we know changed. Roku does not push state, so anything not stated here
         // waits for the next poll.
@@ -394,14 +405,12 @@ impl DriverModule for Roku {
                 a.insert("state".into(), json!("stopped"));
                 out.push(HostCall::notify(MEDIA, "transport_changed", a));
             }
-            "on" | "off" => {
-                let mut a = Args::new();
-                a.insert("on".into(), json!(cmd == "on"));
-                out.push(HostCall::notify(TV, "power_changed", a));
-            }
-            // power_toggle, volume_up/down, mute_toggle: no optimistic notify. Which way a
-            // toggle just went is a guess this driver is not in a better position to make than
-            // reading the set back.
+            // Nothing optimistic, power included. Sending `PowerOn` is not evidence a
+            // television came on: the set may be unplugged, on a different input, or refusing
+            // ECP while it wakes — and a house that believed the command was the outcome would
+            // then route a room through a screen that is dark. `power-mode` in
+            // `/query/device-info` is the set's own answer, read on every bind and every poll,
+            // and it is the only thing here that writes `on`.
             _ => {}
         }
         out
@@ -445,12 +454,24 @@ impl DriverModule for Roku {
             ];
         }
 
-        // `/query/device-info` is read at bind time and nothing here acts on it any more.
-        // It used to be the whole question — `is-tv` decided whether to present a screen —
-        // and that decision moved to setup, which asks the same field before anything is
-        // adopted and picks `roku.tv` or `roku.player` accordingly. See `TV`.
+        // Where the set actually stands, which is the only honest source for it.
+        //
+        // `is-tv` used to be the whole reason this was read — it decided whether to present a
+        // screen — and that moved to setup. What is left is better: `power-mode` is the set
+        // reporting its own power, so the house can stop guessing. Measured on a Hisense Roku
+        // TV: `PowerOn` while it is on, `Ready` in standby.
+        //
+        // `DisplayOff` is a Roku player with its video output asleep and `Headless` is one with
+        // no display attached at all; neither is a television that is on, and neither is one
+        // that was turned off either — but for a `tv` binding there are only two answers and
+        // "not showing a picture" is the truer of them.
         if body.contains("<device-info>") {
-            return Vec::new();
+            let Some(mode) = tag(body, "power-mode") else {
+                return Vec::new();
+            };
+            let mut a = Args::new();
+            a.insert("on".into(), json!(mode.eq_ignore_ascii_case("PowerOn")));
+            return vec![HostCall::notify(TV, "power_changed", a)];
         }
 
         // Order matters: an <active-app> document also contains an <app> element, so
@@ -531,6 +552,11 @@ impl DriverModule for Roku {
         let mut a = Args::new();
         a.insert("online".into(), json!(true));
         out.push(HostCall::notify(MEDIA, "online_changed", a));
+        // Where the set stands. Asked on every bind — and a bind is also every poll, see the
+        // `Poll interval` property — because nothing else will say: ECP pushes nothing, and a
+        // television turned on by its own remote is a television this house believes is off
+        // until it asks.
+        out.push(Self::get("/query/device-info"));
         // Read the channel list before anyone asks for one. It carries this set's real
         // inputs as well as its channels, which is what replaces the manifest's guess.
         out.push(Self::get("/query/apps"));
@@ -1005,6 +1031,63 @@ mod tests {
                    <is-tv>false</is-tv><is-stick>true</is-stick></device-info>"#,
             ),
             "roku.player",
+        );
+    }
+
+    /// Power is what the set says it is, never what it was told to be.
+    ///
+    /// Sending `PowerOn` is not evidence a television came on — it may be unplugged, or
+    /// refusing ECP while it wakes — and a house that took the command for the outcome would
+    /// route a room through a dark screen and report it as working. ECP pushes nothing, so the
+    /// only honest source is `power-mode` in `/query/device-info`, read on every bind and, via
+    /// the `Poll interval` property, on every poll.
+    #[test]
+    fn power_comes_from_the_set_rather_than_from_having_asked() {
+        let driver = Roku;
+
+        // Turning it on says nothing about power. Measured on a real set: ECP accepts the key
+        // while the panel is still coming up, and acts on it when it is not.
+        let calls = driver.on_command(&mut tv(), TV, "on", &Args::new());
+        assert!(
+            !calls.iter().any(|c| matches!(c, HostCall::Notify { name, .. } if name == "power_changed")),
+            "the command is not the answer: {calls:?}",
+        );
+
+        // The set saying where it stands is. `PowerOn` while on, `Ready` in standby — both read
+        // off a Hisense Roku TV.
+        let reading = |xml: &str| {
+            let mut a = Args::new();
+            a.insert("body".into(), json!(xml));
+            match driver.on_event(&mut tv(), 0, "http_response", &a).as_slice() {
+                [HostCall::Notify { proxy, name, args }] if name == "power_changed" => {
+                    assert_eq!(*proxy, TV, "the screen's power, not the streamer's");
+                    args.get("on").and_then(Value::as_bool)
+                }
+                other => panic!("expected one power_changed, got {other:?}"),
+            }
+        };
+        assert_eq!(reading("<device-info><power-mode>PowerOn</power-mode></device-info>"), Some(true));
+        assert_eq!(reading("<device-info><power-mode>Ready</power-mode></device-info>"), Some(false));
+        // A player with its output asleep is not a television that is on.
+        assert_eq!(
+            reading("<device-info><power-mode>DisplayOff</power-mode></device-info>"),
+            Some(false),
+        );
+
+        // And pressing power asks what it did, rather than leaving the house on its last
+        // belief until the poll comes round — `Runtime::showing_on_sink` will not route a
+        // d-pad press at a screen it thinks is off.
+        let calls = driver.on_command(&mut tv(), TV, "on", &Args::new());
+        assert!(
+            calls.iter().any(|c| matches!(c, HostCall::Http(r) if r.url.contains("device-info"))),
+            "asked, then asked what happened: {calls:?}",
+        );
+
+        // And every bind asks, because a poll is a bind.
+        let calls = driver.on_bind(&mut tv());
+        assert!(
+            calls.iter().any(|c| matches!(c, HostCall::Http(r) if r.url.contains("device-info"))),
+            "nothing else would ever ask: {calls:?}",
         );
     }
 

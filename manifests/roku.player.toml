@@ -39,6 +39,18 @@ name = "Address"
 type = "string"
 tooltip = "IP address of the Roku"
 
+# ECP pushes nothing, so what a box is doing is only ever as fresh as the last time it was
+# asked. Core re-runs `on_bind` on this interval, which is where the channel list and what is in
+# the foreground come from.
+[[property]]
+name = "Poll interval"
+type = "ranged_int"
+min = 5
+max = 900
+default = 30
+unit = "s"
+tooltip = "How often to ask the set where it stands. Local, so this can be seconds."
+
 [[property]]
 name = "Port"
 type = "ranged_int"
