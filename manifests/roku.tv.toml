@@ -7,6 +7,10 @@
 id = "roku.tv"
 name = "Roku TV"
 manufacturer = "Roku"
+# The maker's mark, linked and never copied — this package ships no Roku artwork. Core
+# dereferences it once for the whole house (`GET /artwork?driver=<id>`) and every screen
+# draws the same picture: the phone, the on-screen display and the wall panel.
+icon = "https://www.roku.com/apple-touch-icon.png"
 version = "1.0.0"
 # The same product as `roku.player`, and reached the same way — both are `roku:ecp` on 8060,
 # which is why nothing on the wire tells them apart and why setup probes `is-tv` instead. So
